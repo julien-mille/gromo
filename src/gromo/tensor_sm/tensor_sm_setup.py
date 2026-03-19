@@ -1,8 +1,8 @@
-# python3 tensor_sm_setup.py build_ext -i
+from os.path import join
 
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-from os.path import join
+
 
 project_root = '.'
 sources = [join(project_root, file) for file in ['tensor_sm.cpp',
