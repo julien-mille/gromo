@@ -1,4 +1,5 @@
 import types
+import warnings
 from copy import deepcopy
 from typing import Literal
 from unittest import mock
@@ -436,6 +437,10 @@ class TestLinearGrowingModuleBase(TorchTestCase):
         layer_in.extended_output_layer = first_layer_ext
         layer_out.extended_input_layer = second_layer_ext
 
+        layer_in.scaling_factor.data[0] = 1
+        layer_in._scaling_factor_next_module.data[0] = 1
+        layer_out.scaling_factor.data[0] = 1
+
         if include_eigenvalues:
             layer_out.eigenvalues_extension = torch.empty(
                 extension_size, device=global_device()
@@ -476,54 +481,61 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         - without extension_size and without self.eigenvalues_extension
         (error on apply change)
         """
-        with self.subTest("Growable post layer function"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=GrowableIdentity(3)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                ".*The extended post layer function may get a variable input size.*",
+                UserWarning,
             )
-            second_module.apply_change(apply_previous=True, extension_size=2)
-            y = second_module(first_module(self.input_x))
-            self.assertIsInstance(y, torch.Tensor)
 
-        with self.subTest("Growable post layer function in a Sequential"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=torch.nn.Sequential(
-                    torch.nn.Identity(), GrowableIdentity(3)
+            with self.subTest("Growable post layer function"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=GrowableIdentity(3)
                 )
-            )
-            second_module.apply_change(apply_previous=True, extension_size=2)
-            y = second_module(first_module(self.input_x))
-            self.assertIsInstance(y, torch.Tensor)
+                second_module.apply_change(apply_previous=True, extension_size=2)
+                y = second_module(first_module(self.input_x))
+                self.assertIsInstance(y, torch.Tensor)
 
-        with self.subTest("Non-growable post layer function"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=SizedIdentity(3)
-            )
-            second_module.apply_change(apply_previous=True, extension_size=2)
-            with self.assertRaises(ValueError):
-                first_module(self.input_x)
+            with self.subTest("Growable post layer function in a Sequential"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=torch.nn.Sequential(
+                        torch.nn.Identity(), GrowableIdentity(3)
+                    )
+                )
+                second_module.apply_change(apply_previous=True, extension_size=2)
+                y = second_module(first_module(self.input_x))
+                self.assertIsInstance(y, torch.Tensor)
 
-        with self.subTest("Incorrect extension size"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=GrowableIdentity(3)
-            )
-            second_module.apply_change(apply_previous=True, extension_size=3)
-            with self.assertRaises(ValueError):
-                first_module(self.input_x)
+            with self.subTest("Non-growable post layer function"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=SizedIdentity(3)
+                )
+                second_module.apply_change(apply_previous=True, extension_size=2)
+                with self.assertRaises(ValueError):
+                    first_module(self.input_x)
 
-        with self.subTest("No extension size but eigenvalues_extension set"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=GrowableIdentity(3), include_eigenvalues=True
-            )
-            second_module.apply_change(apply_previous=True)
-            y = second_module(first_module(self.input_x))
-            self.assertIsInstance(y, torch.Tensor)
+            with self.subTest("Incorrect extension size"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=GrowableIdentity(3)
+                )
+                second_module.apply_change(apply_previous=True, extension_size=3)
+                with self.assertRaises(ValueError):
+                    first_module(self.input_x)
 
-        with self.subTest("No extension size and no eigenvalues_extension"):
-            first_module, second_module = self.create_demo_layers_with_extension(
-                first_layer_post_layer=GrowableIdentity(3)
-            )
-            with self.assertRaises(AssertionError):
+            with self.subTest("No extension size but eigenvalues_extension set"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=GrowableIdentity(3), include_eigenvalues=True
+                )
                 second_module.apply_change(apply_previous=True)
+                y = second_module(first_module(self.input_x))
+                self.assertIsInstance(y, torch.Tensor)
+
+            with self.subTest("No extension size and no eigenvalues_extension"):
+                first_module, second_module = self.create_demo_layers_with_extension(
+                    first_layer_post_layer=GrowableIdentity(3)
+                )
+                with self.assertRaises(AssertionError):
+                    second_module.apply_change(apply_previous=True)
 
     def test_compute_s(self):
         """Test S tensor computation with optimized setup and helper methods."""
@@ -755,7 +767,7 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         self.assert_tensor_close_with_context(
             layer(x),
             l0(x),
-            context=f"Standard forward with γ={gamma}, γ_next={gamma_next}",
+            context=f"Standard forward with {gamma=}, {gamma_next=}",
         )
 
         # Test extended forward pass
@@ -763,7 +775,7 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
 
         expected_ext_1 = l0(x) - gamma**2 * l_delta(x)
         self.assert_tensor_close_with_context(
-            y_ext_1, expected_ext_1, context=f"Extended forward 1 with γ={gamma}"
+            y_ext_1, expected_ext_1, context=f"Extended forward 1 with {gamma=}"
         )
 
         if y_ext_2 is not None:
@@ -772,7 +784,7 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
                 y_ext_2,
                 expected_ext_2,
                 tolerance=self.config.REDUCED_TOLERANCE,
-                context=f"Extended forward 2 with γ_next={gamma_next}",
+                context=f"Extended forward 2 with {gamma_next=}",
             )
 
     def _test_apply_changes(self, layer, l0, l_ext, gamma: float, gamma_next: float):
@@ -857,6 +869,7 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
 
     def test_layer_in_extension(self):
         """Test input layer extension functionality."""
+        # without bias
         layer = LinearGrowingModule(3, 1, use_bias=False, name="layer1")
         layer.weight = torch.nn.Parameter(torch.ones(1, 3))
         self.assertEqual(layer.number_of_parameters(), 3)
@@ -873,6 +886,25 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         x = torch.tensor([[1, 2, 3, 4]], dtype=torch.float32)
         y = layer(x)
         self.assertAllClose(y, torch.tensor([[46.0]]))
+
+        # with bias
+        layer = LinearGrowingModule(3, 1, use_bias=True, name="layer1")
+        layer.weight = torch.nn.Parameter(torch.ones(1, 3))
+        layer.bias = torch.nn.Parameter(torch.tensor([10.0]))
+        self.assertEqual(layer.number_of_parameters(), 4)
+        self.assertEqual(layer.in_features, 3)
+
+        x = torch.tensor([[1, 2, 3]], dtype=torch.float32)
+        y = layer(x)
+        self.assertAllClose(y, torch.tensor([[16.0]]))
+
+        layer.layer_in_extension(torch.tensor([[10]], dtype=torch.float32))
+        self.assertEqual(layer.number_of_parameters(), 5)
+        self.assertEqual(layer.in_features, 4)
+        self.assertEqual(layer.layer.in_features, 4)
+        x = torch.tensor([[1, 2, 3, 4]], dtype=torch.float32)
+        y = layer(x)
+        self.assertAllClose(y, torch.tensor([[56.0]]))
 
     def test_layer_out_extension(self):
         # without bias
@@ -1188,7 +1220,8 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         self, bias: bool, dtype: torch.dtype = torch.float32
     ):
         demo_layers = self.demo_layers[bias]
-        demo_layers[0].store_input = True
+        # Initialize computation using the proper API
+        demo_layers[0].init_computation()
         demo_layers[1].init_computation()
 
         y = demo_layers[0](self.input_x)
@@ -1196,16 +1229,22 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         loss = torch.norm(y)
         loss.backward()
 
+        # Update computation using the proper API
+        demo_layers[0].update_computation()
         demo_layers[1].update_computation()
 
         demo_layers[1].compute_optimal_delta()
+        # Use private method with new signature (TINY method: use_covariance=True, alpha_zero=False, use_projection=True)
         alpha, alpha_b, omega, eigenvalues = demo_layers[
             1
-        ].compute_optimal_added_parameters(
+        ]._compute_optimal_added_parameters(
             dtype=dtype,
             statistical_threshold=0,
             numerical_threshold=0,
             maximum_added_neurons=10,
+            use_projection=True,
+            use_covariance=True,
+            alpha_zero=False,
         )
 
         self.assertShapeEqual(
@@ -1237,41 +1276,33 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         self.assertEqual(demo_layers[1].extended_input_layer.in_features, 2)
         self.assertEqual(demo_layers[0].extended_output_layer.out_features, 2)
 
-    def test_compute_optimal_added_parameters_use_projected_gradient_false(self):
-        """Test compute_optimal_added_parameters with use_projected_gradient=False."""
-        # Use existing demo layers from setUp
-        demo_layers = self.demo_layers[False]  # Use without bias for simplicity
-        demo_layers[0].store_input = True
-        demo_layers[1].init_computation()
-
-        y = demo_layers[0](self.input_x)
-        y = demo_layers[1](y)
-        loss = torch.norm(y)
-        loss.backward()
-
-        demo_layers[1].update_computation()
-
-        # Call compute_optimal_added_parameters with use_projected_gradient=False
-        alpha, alpha_b, omega, eigenvalues = demo_layers[
-            1
-        ].compute_optimal_added_parameters(use_projected_gradient=False)
-
-        # Verify that we get valid outputs with expected shapes
-        self.assertShapeEqual(alpha, (-1, demo_layers[0].in_features))
-        k = alpha.size(0)
-        self.assertIsNone(alpha_b)  # No bias in this test
-        self.assertShapeEqual(omega, (demo_layers[1].out_features, k))
-        self.assertShapeEqual(eigenvalues, (k,))
-
     def test_compute_optimal_added_parameters_no_previous_module_error(self):
         """Test ValueError when no previous module in compute_optimal_added_parameters."""
         layer = LinearGrowingModule(3, 2, device=global_device())
         layer.previous_module = None  # No previous module
 
         # Should trigger ValueError
+        # Use private method with new signature
         with self.assertRaises(ValueError) as context:
-            layer.compute_optimal_added_parameters()
+            layer._compute_optimal_added_parameters(
+                use_projection=True, use_covariance=True, alpha_zero=False
+            )
         self.assertIn("No previous module", str(context.exception))
+
+    def test_compute_optimal_updates_rejects_extra_kwargs(self):
+        """Unexpected kwargs should be rejected instead of ignored."""
+        _, second_layer = self.demo_layers[False]
+
+        with self.assertRaises(TypeError) as context:
+            second_layer.compute_optimal_updates(
+                compute_delta=False,
+                use_covariance=False,
+                alpha_zero=True,
+                use_projection=False,
+                nested_call_option=True,
+            )
+
+        self.assertIn("nested_call_option", str(context.exception))
 
     def test_multiple_successors_warning(self):
         """Test warning for multiple successors"""
@@ -1351,6 +1382,27 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
             expected_shape = (layer.in_features, layer.in_features)
             self.assertEqual(p_result.shape, expected_shape)
 
+    def test_compute_cross_covariance_update_unsupported_previous_module_error(self):
+        """Test NotImplementedError when previous_module is unsupported type."""
+        # Create layer
+        layer = LinearGrowingModule(3, 2, device=global_device(), name="test_layer")
+
+        # Set unsupported previous module type (regular torch.nn.Linear)
+        layer.previous_module = torch.nn.Linear(2, 3)
+
+        # Set up required state for compute_cross_covariance_update
+        layer.store_input = True
+        layer._internal_store_input = True
+        layer._input = torch.randn(2, 3, device=global_device())
+
+        # Should raise NotImplementedError
+        with self.assertRaises(NotImplementedError) as context:
+            layer.compute_cross_covariance_update()
+
+        # Verify error message
+        self.assertIn("not implemented yet", str(context.exception))
+        self.assertIn("previous module", str(context.exception))
+
     def test_compute_s_update_else_branch(self):
         """Test the else branch in LinearMergeGrowingModule compute_s_update"""
         # Create a LinearMergeGrowingModule and set bias=False to trigger the else branch
@@ -1397,42 +1449,46 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         self.assertGreater(m_samples, 0)
 
     def test_negative_parameter_update_decrease_paths(self):
-        """Test error paths for problematic parameter computations"""
+        """Test that the layer emits the expected warning when parameter_update_decrease is negative.
+
+        We use a full init/forward/backward/update_computation setup so compute_optimal_delta
+        runs with valid S and M. We then mock torch.trace to return a negative value so that
+        optimal_delta (in tools) takes the warning path and we can assert on it.
+        """
         from unittest.mock import patch
 
-        # Create a layer and set up for computation
         layer = LinearGrowingModule(2, 2, device=global_device(), name="test_layer")
-
-        # Set up basic tensors to trigger the problematic computation path
         layer.init_computation()
         layer.store_input = True
         layer.store_pre_activity = True
 
-        # Create a simple forward pass
-        x = torch.randn(3, 2, device=global_device())
-        _ = layer(x)
+        # Full setup so tensor_s and tensor_m are valid
+        x = torch.randn(3, 2, device=global_device(), requires_grad=True)
+        out = layer(x)
+        out.sum().backward()
+        layer.update_computation()
 
-        # Try to force a negative parameter update decrease scenario
-        # by creating problematic tensor conditions
-        with patch("warnings.warn") as mock_warn:
-            try:
-                # This test is mainly to increase coverage of the error handling paths
-                # We create conditions that might trigger the warning paths
+        # Force the negative parameter_update_decrease path (same pattern as test_tools)
+        with patch("gromo.utils.tools.warn") as mock_warn:
+            with patch(
+                "torch.trace", return_value=torch.tensor(-1.0, device=global_device())
+            ):
                 layer.compute_optimal_delta(update=False)
 
-                # Check if any warnings about parameter update decrease were called
-                warning_calls = [
-                    call
-                    for call in mock_warn.call_args_list
-                    if "parameter update decrease" in str(call)
-                ]
-
-                # The test passes if we exercised the code paths, regardless of warnings
-                self.assertTrue(True)  # Code paths exercised
-
-            except Exception:
-                # If computation fails, that's still testing the error paths
-                self.assertTrue(True)  # Error paths exercised
+            warning_calls = [
+                call
+                for call in mock_warn.call_args_list
+                if "parameter update decrease" in str(call)
+            ]
+            self.assertGreater(
+                len(warning_calls),
+                0,
+                "Expected at least one 'parameter update decrease' warning when trace is mocked negative",
+            )
+            self.assertTrue(
+                all("should be positive" in str(call) for call in warning_calls),
+                "parameter update decrease warnings should contain 'should be positive'",
+            )
 
     def test_zero_bottleneck(self):
         """Test behavior when bottleneck is fully resolved
@@ -1497,25 +1553,30 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         )
         layer2.previous_module = layer1
 
-        layer1.store_input = True
-        layer2.store_pre_activity = True
-        layer2.tensor_m_prev.init()
-        layer2.tensor_s_growth.init()
+        # Initialize computation using the proper API
+        layer1.init_computation()
+        layer2.init_computation()
 
         y = layer2(layer1(self.input_x))
         loss = torch.norm(y)
         loss.backward()
 
-        layer2.tensor_m_prev.update()
-        layer2.tensor_s_growth.update()
-        layer2.compute_optimal_added_parameters(use_projected_gradient=False)
+        # Update computation using the proper API
+        layer1.update_computation()
+        layer2.update_computation()
+        # Need to compute optimal delta first to set up tensor_n for use_projection=True
+        layer2.compute_optimal_delta()
+        # Use private method with new signature (TINY method: use_covariance=True, alpha_zero=False, use_projection=True)
+        layer2._compute_optimal_added_parameters(
+            use_projection=True, use_covariance=True, alpha_zero=False
+        )
 
         self.assertIsInstance(layer1.extended_output_layer, torch.nn.Linear)
         assert isinstance(layer1.extended_output_layer, torch.nn.Linear)
         if first_layer_bias:
             self.assertIsNotNone(layer1.extended_output_layer.bias)
 
-        layer2.apply_change()
+        layer2.apply_change(scaling_factor=1)
         y = layer2(layer1(self.input_x))
         self.assertIsNotNone(y)
         self.assertIsInstance(y, torch.Tensor)
@@ -1537,10 +1598,9 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         layer1.weight.data.fill_(0.0)
         layer2.weight.data.fill_(0.0)
 
-        layer1.store_input = True
-        layer2.store_pre_activity = True
-        layer2.tensor_m_prev.init()
-        layer2.tensor_s_growth.init()
+        # Initialize computation using the proper API
+        layer1.init_computation()
+        layer2.init_computation()
 
         input_x = indicator_batch((layer1.in_features,), device=global_device())
         y = layer2(layer1(input_x))
@@ -1548,10 +1608,17 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         # learning the identity
         loss = torch.norm(y - input_x) ** 2 / 2
         loss.backward()
-        layer2.tensor_m_prev.update()
-        layer2.tensor_s_growth.update()
-        layer2.compute_optimal_added_parameters(
-            use_projected_gradient=False, maximum_added_neurons=self.config.C_FEATURES
+
+        # Update computation using the proper API
+        layer1.update_computation()
+        layer2.update_computation()
+        # Use private method with new signature - test with no projection (use_projection=False)
+        # This test specifically tests the no-projection path
+        layer2._compute_optimal_added_parameters(
+            maximum_added_neurons=self.config.C_FEATURES,
+            use_projection=False,  # Test no projection case
+            use_covariance=True,
+            alpha_zero=False,
         )
         self.assertIsInstance(layer1.extended_output_layer, torch.nn.Linear)
         assert isinstance(layer1.extended_output_layer, torch.nn.Linear)
@@ -1748,7 +1815,8 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
             5, 4, device=global_device(), name="mismatch"
         )
         with self.assertRaises(AssertionError):
-            layer.set_next_modules([mismatch_layer])
+            with self.assertWarns(UserWarning):  # Next modules with non-empty tensor S
+                layer.set_next_modules([mismatch_layer])
 
     def test_set_previous_modules_warning_and_assertion(self):
         """Test set_previous_modules triggers warnings and assertion
@@ -1955,12 +2023,14 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         added_in_features = 2
 
         # This should trigger the added_in_features > 0 branch
-        layer.add_parameters(
-            matrix_extension=None,
-            bias_extension=None,
-            added_in_features=added_in_features,
-            added_out_features=0,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer.add_parameters(
+                matrix_extension=None,
+                bias_extension=None,
+                added_in_features=added_in_features,
+                added_out_features=0,
+            )
 
         # Verify layer dimensions changed correctly
         self.assertEqual(layer.in_features, original_in_features + added_in_features)
@@ -1990,12 +2060,14 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         )
 
         # This should trigger the custom matrix_extension branch
-        layer.add_parameters(
-            matrix_extension=custom_matrix,
-            bias_extension=None,
-            added_in_features=added_in_features,
-            added_out_features=0,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer.add_parameters(
+                matrix_extension=custom_matrix,
+                bias_extension=None,
+                added_in_features=added_in_features,
+                added_out_features=0,
+            )
 
         # Verify layer dimensions
         self.assertEqual(layer.in_features, original_in_features + added_in_features)
@@ -2021,12 +2093,14 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         added_out_features = 2
 
         # This should trigger the added_out_features > 0 branch
-        layer.add_parameters(
-            matrix_extension=None,
-            bias_extension=None,
-            added_in_features=0,
-            added_out_features=added_out_features,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer.add_parameters(
+                matrix_extension=None,
+                bias_extension=None,
+                added_in_features=0,
+                added_out_features=added_out_features,
+            )
 
         # Verify layer dimensions changed correctly
         self.assertEqual(layer.in_features, original_in_features)
@@ -2057,12 +2131,14 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         )
 
         # This should trigger the custom matrix/bias extension branches
-        layer.add_parameters(
-            matrix_extension=custom_weight,
-            bias_extension=custom_bias,
-            added_in_features=0,
-            added_out_features=added_out_features,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer.add_parameters(
+                matrix_extension=custom_weight,
+                bias_extension=custom_bias,
+                added_in_features=0,
+                added_out_features=added_out_features,
+            )
 
         # Verify layer dimensions
         self.assertEqual(layer.in_features, original_in_features)
@@ -2099,7 +2175,7 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
                 added_out_features=1,
             )
         self.assertIn(
-            "cannot add input and output features at the same time",
+            "Cannot add input and output features at the same time",
             str(context.exception),
         )
 
@@ -2285,7 +2361,11 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         layer2.update_computation()
 
         # Compute optimal delta for layer2 (required for projected_v_goal)
-        layer2.compute_optimal_delta()
+        with self.assertMaybeWarns(
+            UserWarning,
+            "Using the pseudo-inverse for the computation of the optimal delta",
+        ):
+            layer2.compute_optimal_delta()
 
         # Test compute_n_update
         n_update, n_samples = layer1.compute_n_update()
@@ -2544,28 +2624,32 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         layer2.update_computation()
 
         # Test various methods that might trigger remaining missing lines
-        layer2.compute_optimal_delta()
+        with self.assertMaybeWarns(
+            UserWarning,
+            "Using the pseudo-inverse for the computation of the optimal delta",
+        ):
+            layer2.compute_optimal_delta()
 
         # Test with different input shapes by doing another forward pass
         x_new = torch.randn(7, 3, device=global_device())  # Different batch size
         output_new = layer1(x_new)
         output_new = layer2(output_new)
 
-        # Test compute_p with different configurations
+        # Test compute_p with different configurations (if the method exists)
         try:
             p_result, p_samples = layer2.compute_p()
             self.assertIsInstance(p_result, torch.Tensor)
             self.assertEqual(p_samples, 7)
-        except Exception:
-            pass  # Some configurations might not work, that's OK
+        except (AssertionError, ValueError, RuntimeError, AttributeError):
+            pass  # Config-dependent or method not available (e.g. no compute_p).
 
         # Test compute_n_update with different scenarios
         try:
             n_update, n_samples = layer1.compute_n_update()
             self.assertIsInstance(n_update, torch.Tensor)
             self.assertEqual(n_samples, 7)
-        except Exception:
-            pass  # Some configurations might not work, that's OK
+        except (AssertionError, ValueError, RuntimeError, TypeError, AttributeError):
+            pass  # Config-dependent failure for this shape/setup.
 
     def test_sub_select_previous_module_error_conditions(self):
         """Test sub_select_optimal_added_parameters with
@@ -2627,8 +2711,14 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         )
         layer.previous_module = merge_module
 
+        # Use private method with new signature
         with self.assertRaises(NotImplementedError):
-            layer.compute_optimal_added_parameters(update_previous=True)
+            layer._compute_optimal_added_parameters(
+                update_previous=True,
+                use_projection=True,
+                use_covariance=True,
+                alpha_zero=False,
+            )
 
         # Test case 2: Previous module is unsupported type
         class MockLinear(torch.nn.Linear):
@@ -2641,7 +2731,12 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         )  # Mock Linear layer with use_bias attribute
 
         with self.assertRaises(NotImplementedError) as context:
-            layer.compute_optimal_added_parameters(update_previous=True)
+            layer._compute_optimal_added_parameters(
+                update_previous=True,
+                use_projection=True,
+                use_covariance=True,
+                alpha_zero=False,
+            )
         self.assertIn("not implemented yet", str(context.exception))
 
     def test_force_pseudo_inverse_path_coverage(self):
@@ -2697,9 +2792,11 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         object.__setattr__(merge_module, "previous_tensor_m", mock_tensor_m)
 
         # This should trigger the LinAlgError exception and force pseudo-inverse
-        deltas = merge_module.compute_optimal_delta(
-            return_deltas=True, force_pseudo_inverse=False
-        )
+        with self.assertWarns(UserWarning):
+            # Using the pseudo-inverse for the computation of the optimal delta
+            deltas = merge_module.compute_optimal_delta(
+                return_deltas=True, force_pseudo_inverse=False
+            )
 
         # Verify that deltas were computed using pseudo-inverse
         self.assertIsInstance(deltas, list)
@@ -2846,8 +2943,8 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
                     grad = layer.activation_gradient
                     if grad is not None:
                         self.assertIsInstance(grad, torch.Tensor)
-                except Exception:
-                    # Coverage achieved even if it fails
+                except (NotImplementedError, ValueError, AttributeError):
+                    # Coverage of error path when previous is MergeGrowingModule.
                     pass
 
     def test_add_parameters_documentation_fixes_differential_coverage(self):
@@ -2856,29 +2953,33 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
         layer = LinearGrowingModule(3, 2, device=global_device())
 
         # Test input feature addition (changed documentation and assertions)
-        layer.add_parameters(
-            matrix_extension=torch.randn(
-                2, 2, device=global_device()
-            ),  # (out_features, added_in_features)
-            bias_extension=None,
-            added_in_features=2,
-            added_out_features=0,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer.add_parameters(
+                matrix_extension=torch.randn(
+                    2, 2, device=global_device()
+                ),  # (out_features, added_in_features)
+                bias_extension=None,
+                added_in_features=2,
+                added_out_features=0,
+            )
         # Verify the addition worked
         self.assertEqual(layer.weight.shape[1], 5)  # 3 + 2
 
         # Test output feature addition (changed documentation and assertions)
         layer2 = LinearGrowingModule(3, 2, device=global_device())
-        layer2.add_parameters(
-            matrix_extension=torch.randn(
-                1, 3, device=global_device()
-            ),  # (added_out_features, in_features)
-            bias_extension=torch.randn(
-                1, device=global_device()
-            ),  # (added_out_features,)
-            added_in_features=0,
-            added_out_features=1,
-        )
+        with self.assertWarns(UserWarning):
+            # It is up to the user to change the connected layers
+            layer2.add_parameters(
+                matrix_extension=torch.randn(
+                    1, 3, device=global_device()
+                ),  # (added_out_features, in_features)
+                bias_extension=torch.randn(
+                    1, device=global_device()
+                ),  # (added_out_features,)
+                added_in_features=0,
+                added_out_features=1,
+            )
         # Verify the addition worked
         self.assertEqual(layer2.weight.shape[0], 3)  # 2 + 1
 
@@ -2969,8 +3070,8 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
                     grad = layer.activation_gradient
                     if grad is not None:
                         self.assertIsInstance(grad, torch.Tensor)
-                except Exception:
-                    # Coverage achieved even if it fails
+                except (NotImplementedError, ValueError, AttributeError):
+                    # Coverage of error path when previous is MergeGrowingModule.
                     pass
 
     def test_comprehensive_method_modifications(self):
@@ -2997,8 +3098,8 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
                 added_out_features=0,
             )
             self.assertEqual(layer.weight.shape[1], original_weight_shape[1] + 2)
-        except Exception:
-            pass
+        except (AssertionError, ValueError, RuntimeError):
+            pass  # Configs where addition may fail.
 
         # Reset for output feature test
         layer = LinearGrowingModule(4, 3, device=global_device())
@@ -3012,8 +3113,8 @@ class TestLinearMergeGrowingModule(TestLinearGrowingModuleBase):
                 added_out_features=2,
             )
             self.assertEqual(layer.weight.shape[0], 3 + 2)
-        except Exception:
-            pass
+        except (AssertionError, ValueError, RuntimeError):
+            pass  # Configs where addition may fail.
 
     def test_linear_growing_module_init_computation_changes(self):
         """Test the modified init_computation method in LinearGrowingModule."""
@@ -3452,9 +3553,9 @@ class TestScalingMethods(TestLinearGrowingModuleBase):
             half = d // 2
             flat[:half] = target_std
             flat[half:-1] = -target_std
-            assert (
-                abs(tensor.std().item() - target_std) < 1e-5
-            ), f"Tensor std {tensor.std().item()} does not match target {target_std}"
+            assert abs(tensor.std().item() - target_std) < 1e-5, (
+                f"Tensor std {tensor.std().item()} does not match target {target_std}"
+            )
             return tensor
 
         def setup_layers_with_known_stds(
@@ -3727,28 +3828,36 @@ class TestCreateLayerExtensions(TestLinearGrowingModuleBase):
                 msg="layer_out has no extended output when only input extension is added",
             )
 
+            layer_out.apply_change(extension_size=extension_size)
+
         # Subtest 2: Without features (hidden_features=0)
         with self.subTest(case="without_features"):
             # Create two connected growing modules with 0 hidden features
-            layer_in, layer_out = self.create_demo_layers_with_extension(
-                hidden_features=0
-            )
+            with self.assertWarns(UserWarning):
+                # Initializing zero-element tensors is a no-op
+                layer_in, layer_out = self.create_demo_layers_with_extension(
+                    hidden_features=0
+                )
 
             # When out_features=0, the layer has no weights
             # So copy_uniform should fallback to 1/sqrt(fan_in)
             # Note: This test verifies the fallback behavior works correctly
             extension_size = 2
 
-            with self.assertWarns(UserWarning):
-                # UserWarning: std(): degrees of freedom is <= 0. Correction should
-                # be strictly less than the reduction factor (input numel divided by
-                # output numel).
-                # This happens because the layer has no weights to compute std from.
+            # Check that kaiming_initialization fallback is called
+            with mock.patch.object(
+                layer_out,
+                "kaiming_initialization",
+                wraps=layer_out.kaiming_initialization,
+            ) as kaiming_mock:
                 layer_out.create_layer_extensions(
                     extension_size=extension_size,
                     output_extension_init="copy_uniform",
                     input_extension_init="copy_uniform",
                 )
+
+            # For layer sizes 5 -> 0 -> 7, use Kaiming fallback for all but output bias
+            self.assertEqual(kaiming_mock.call_count, 3)
 
             # Verify extensions were created
             self.assertIsInstance(
@@ -3769,10 +3878,10 @@ class TestCreateLayerExtensions(TestLinearGrowingModuleBase):
             # Initialize manually with fallback behavior
             # For extended_output_layer:
             # fan_in = self.config.LAYER_DIMS["demo_1"][0] (== 5)
-            expected_output_ext_std = 1.0 / (self.config.LAYER_DIMS["demo_1"][0] ** 0.5)
+            expected_output_ext_std = (2.0 / self.config.LAYER_DIMS["demo_1"][0]) ** 0.5
             # For extended_input_layer:
             # fan_in = extension_size (== 2)
-            expected_input_ext_std = 1.0 / (extension_size**0.5)
+            expected_input_ext_std = (2.0 / extension_size) ** 0.5
 
             # Verify std matches expected values
             # Allow tolerance for small sample statistics
@@ -3788,6 +3897,64 @@ class TestCreateLayerExtensions(TestLinearGrowingModuleBase):
                 delta=expected_input_ext_std * 0.5,
                 msg=f"extended_input_layer std should be ~{expected_input_ext_std}",
             )
+
+            layer_out.apply_change(extension_size=extension_size)
+
+    @unittest_parametrize(({"bias": False}, {"bias": True}))
+    def test_create_layer_extensions_with_kaiming_matches_pytorch(
+        self, bias: bool
+    ) -> None:
+        """Test Kaiming extension init matches PyTorch fan-in behavior."""
+        extension_size = 18
+
+        for test_case, features in (("with_features", 15), ("without_features", 0)):
+            with self.subTest(case=test_case):
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        ".*Initializing zero-element tensors is a no-op.*",
+                        UserWarning,
+                    )
+                    layer_in, layer_out = self.create_demo_layers(
+                        bias=bias,
+                        hidden_features=features,
+                    )
+
+                layer_out.create_layer_extensions(
+                    extension_size=extension_size,
+                    output_extension_init="kaiming",
+                    input_extension_init="kaiming",
+                )
+
+                ref_in_weight = torch.empty(
+                    (
+                        layer_out.out_features,
+                        layer_out.in_features + extension_size,
+                    ),
+                    device=global_device(),
+                )
+
+                torch.nn.init.kaiming_uniform_(ref_in_weight)
+                ref_in_weight = ref_in_weight[:, -extension_size:]
+
+                assert isinstance(layer_out.extended_input_layer, torch.nn.Linear)
+                self.assertAlmostEqual(
+                    layer_out.extended_input_layer.weight.std().item(),
+                    ref_in_weight.std().item(),
+                    delta=ref_in_weight.std().item() * 0.1,
+                    msg="extended_input_layer weight std should match PyTorch Kaiming",
+                )
+
+                assert isinstance(layer_in.extended_output_layer, torch.nn.Linear)
+                ref_out_weight = torch.empty_like(layer_in.extended_output_layer.weight)
+                torch.nn.init.kaiming_uniform_(ref_out_weight)
+
+                self.assertAlmostEqual(
+                    layer_in.extended_output_layer.weight.std().item(),
+                    ref_out_weight.std().item(),
+                    delta=ref_out_weight.std().item() * 0.1,
+                    msg="extended_output_layer weight std should match PyTorch Kaiming",
+                )
 
     def test_create_layer_extensions_mixed_initializations(self) -> None:
         """Test create_layer_extensions with mixed initializations."""
@@ -3879,6 +4046,8 @@ class TestCreateLayerExtensions(TestLinearGrowingModuleBase):
             z_ext,
             msg="layer_out has no extended output when only input extension is added",
         )
+
+        layer_out.apply_change(extension_size=output_extension_size)
 
     def test_create_layer_extensions_unknown_initialization(self) -> None:
         """Test create_layer_extensions with unknown initialization raises exception."""
@@ -4016,12 +4185,11 @@ class TestNeuronCountingAndGrowth(TestLinearGrowingModuleBase):
     def test_complete_growth_increases_in_features(self) -> None:
         """Test that complete_growth grows the layer to target size."""
         # Create two connected layers
-        # Using use_bias=False to avoid bias assertion in apply_change
         layer1 = LinearGrowingModule(
             in_features=5,
             out_features=3,
             target_in_features=6,
-            use_bias=False,
+            use_bias=True,
             device=global_device(),
             name="layer1",
         )
@@ -4029,7 +4197,7 @@ class TestNeuronCountingAndGrowth(TestLinearGrowingModuleBase):
             in_features=3,
             out_features=7,
             target_in_features=6,
-            use_bias=False,
+            use_bias=True,
             previous_module=layer1,
             device=global_device(),
             name="layer2",
@@ -4040,12 +4208,23 @@ class TestNeuronCountingAndGrowth(TestLinearGrowingModuleBase):
         self.assertEqual(layer2.missing_neurons(), 3)
 
         # Complete growth
-        layer2.complete_growth(extension_kwargs={})
+        layer2.complete_growth(
+            extension_kwargs={
+                "output_extension_init": "zeros",
+                "input_extension_init": "copy_uniform",
+            }
+        )
 
         # Verify final state
         self.assertEqual(layer2.in_features, 6)
         self.assertEqual(layer1.out_features, 6)
         self.assertEqual(layer2.missing_neurons(), 0)
+        self.assertTrue(torch.all(layer1.weight[-3:] == 0.0))
+        self.assertNotEqual(
+            torch.abs(layer2.layer.weight[:, -3:]).sum().item(),
+            0.0,
+            msg="New weights should not be zero after growth",
+        )
 
     def test_complete_growth_does_nothing_when_already_at_target(self) -> None:
         """Test that complete_growth does nothing when layer is at target size."""

@@ -63,7 +63,11 @@ class TestGrowingMLP(TorchTestCase):
 
         # Compute the optimal updates for growing functionality
         gather_statistics(self.dataloader, self.model, self.loss)
-        self.model.compute_optimal_updates()
+        with self.assertMaybeWarns(
+            UserWarning,
+            "Using the pseudo-inverse for the computation of the optimal delta",
+        ):
+            self.model.compute_optimal_updates()
 
     def test_set_growing_layers(self):
         """Test setting growing layers in the GrowingMLP model."""
@@ -145,7 +149,9 @@ class TestGrowingMLP(TorchTestCase):
         y_pred_normalised_list = [self.model(x) for x, _ in self.dataloader]
 
         # Predictions should remain the same after normalization
-        for y_pred, y_pred_normalised in zip(y_pred_list, y_pred_normalised_list):
+        for y_pred, y_pred_normalised in zip(
+            y_pred_list, y_pred_normalised_list, strict=True
+        ):
             self.assertAllClose(y_pred, y_pred_normalised, atol=1e-7)
 
     def test_normalise_verbose(self):

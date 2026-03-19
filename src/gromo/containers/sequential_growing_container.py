@@ -2,20 +2,30 @@ from typing import Any
 
 import torch
 
-from gromo.containers.growing_container import GrowingContainer
+from gromo.containers.growing_container import GrowingContainer, GrowingModel
 from gromo.modules.growing_module import GrowingModule
 
 
-class SequentialGrowingContainer(GrowingContainer):
+class SequentialGrowingModel(GrowingModel):
+    """Container for sequential model architectures
+
+    Parameters
+    ----------
+    in_features : int
+        input features, to be interpreted based on current needs
+    out_features : int
+        output features, to be interpreted based on current needs
+    device : torch.device | str | None, optional
+        default device, by default None
+    """
+
     def __init__(
         self,
         in_features: int,
         out_features: int,
         device: torch.device | str | None = None,
     ) -> None:
-        super(SequentialGrowingContainer, self).__init__(
-            in_features, out_features, device
-        )
+        super(SequentialGrowingModel, self).__init__(in_features, out_features, device)
         assert all(
             isinstance(layer, (GrowingModule, GrowingContainer))
             for layer in self._growing_layers
@@ -40,9 +50,16 @@ class SequentialGrowingContainer(GrowingContainer):
             growing_layers list.
             "all": all layers in the _growable_layers list are added to the
             _growing_layers list.
-        index : int, optional
+        index : int | None, optional
             If scheduling_method is "sequential", this index specifies which layer to
             grow next.
+
+        Raises
+        ------
+        IndexError
+            if index is out of bounds for the number og growing_layers in the module
+        ValueError
+            if argument scheduling_method is not 'sequential' or 'all'
         """
         if isinstance(index, int):
             if index < 0 or index >= len(self._growable_layers):
@@ -64,14 +81,14 @@ class SequentialGrowingContainer(GrowingContainer):
                 self._growable_layers
             )
             # The above ignore is needed because we do not allow MergeGrowingModule in
-            # SequentialGrowingContainer, but it is allowed in GrowingContainer.
+            # SequentialGrowingModel, but it is allowed in GrowingContainer.
         else:
             raise ValueError(
                 f"Invalid scheduling method: {scheduling_method}. Supported methods are "
                 f"'sequential' and 'all'."
             )
 
-    def number_of_neurons_to_add(self, **kwargs) -> int:
+    def number_of_neurons_to_add(self, **kwargs: Any) -> int:
         """Get the number of neurons to add in the next growth step."""
         if self.layer_to_grow_index < 0:
             raise RuntimeError(
@@ -85,12 +102,18 @@ class SequentialGrowingContainer(GrowingContainer):
         )
 
     def update_information(self) -> dict[str, Any]:
-        """Get information about the current state of the growing layers."""
+        """Update information for all growing layers including first order improvement
+
+        Returns
+        -------
+        dict[str, Any]
+            information dictionary
+        """
         information = {}
         for i, layer in enumerate(self._growing_layers):
-            assert isinstance(
-                layer.parameter_update_decrease, torch.Tensor
-            ), "parameter_update_decrease should be a tensor"
+            assert isinstance(layer.parameter_update_decrease, torch.Tensor), (
+                "parameter_update_decrease should be a tensor"
+            )
             layer_information = {
                 "update_value": layer.first_order_improvement.item(),
                 "parameter_improvement": layer.parameter_update_decrease.item(),
